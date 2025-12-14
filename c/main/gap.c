@@ -34,6 +34,66 @@ inline static void format_addr(char *addr_str, uint8_t addr[]) {
           addr[3], addr[4], addr[5]);
 }
 
+static int gap_event_handler(struct ble_gap_event *event, void *arg) {
+  int rc = 0;
+  struct ble_gap_conn_desc desc;
+
+  switch (event->type) {
+
+  case BLE_GAP_EVENT_CONNECT:
+    // Two possibilities: a new connection or a failed connection
+    ESP_LOGI(TAG, "Connection %s: stauts=%d",
+             event->connect.status == 0 ? "established" : "failed",
+             event->connect.status);
+
+    if (event->connect.status == 0) {
+      // Connection succeeded, check connection handle
+      rc = ble_gap_conn_find(event->connect.conn_handle, &desc);
+      if (rc != 0) {
+        ESP_LOGE(TAG, "failed to find connection by handle, error code: %d",
+                 rc);
+        return rc;
+      }
+
+      // print_conn_desc(&desc);
+      // led_on();
+
+      // Try to update connection parameters
+      struct ble_gap_upd_params params = {.itvl_min = desc.conn_itvl,
+                                          .itvl_max = desc.conn_itvl,
+                                          .latency = 3,
+                                          .supervision_timeout =
+                                              desc.supervision_timeout};
+      rc = ble_gap_update_params(event->connect.conn_handle, &params);
+      if (rc != 0) {
+        ESP_LOGE(TAG, "failed to update connection parameters, error code: %d",
+                 rc);
+        return rc;
+      }
+    } else {
+      // Connection failed, restart advertising
+      adv_start();
+    }
+    return rc;
+    break;
+
+  case BLE_GAP_EVENT_DISCONNECT:
+    ESP_LOGI(TAG, "Disconnected, reason=%d", event->disconnect.reason);
+    adv_start();
+    break;
+
+  case BLE_GAP_EVENT_CONN_UPDATE:
+    ESP_LOGI(TAG, "Connection updated: status=%d", event->conn_update.status);
+
+    rc = ble_gap_conn_find(event->conn_update.conn_handle, &desc);
+    if (rc != 0) {
+      ESP_LOGE(TAG, "Failed to find conection by handle, error: %d", rc);
+      return rc;
+    }
+  }
+  return rc;
+}
+
 int adv_start() {
   int rc = 0;
   const char *name;
@@ -70,27 +130,25 @@ int adv_start() {
     return rc;
   }
 
-  // For the SCAN field
-  rsp_fields.device_addr = addr_val;
-  rsp_fields.device_addr_type = own_addr_type;
-  rsp_fields.device_addr_is_present = 1;
+  // URI
+  rsp_fields.uri = uri;
+  rsp_fields.uri_len = sizeof(uri);
 
-  // Some scanners expect name in scan response as well
-  rsp_fields.name = (uint8_t *)name;
-  rsp_fields.name_len = strlen(name);
-  rsp_fields.name_is_complete = 1;
+  // Intervals
+  rsp_fields.adv_itvl = BLE_GAP_ADV_ITVL_MS(500);
+  rsp_fields.adv_itvl_is_present = 1;
 
-  rc = ble_gap_adv_set_fields(&rsp_fields);
+  rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
   if (rc != 0) {
     ESP_LOGE(TAG, "failed to set scan fields, error code: %d", rc);
     return rc;
   }
 
   // Set non-connetable and general discoverable mode to be a beacon
-  adv_params.conn_mode = BLE_GAP_CONN_MODE_NON;
+  adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
   adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-  rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, NULL,
-                         NULL);
+  rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params,
+                         gap_event_handler, NULL);
   if (rc != 0) {
     ESP_LOGE(TAG, "failed to start advertising, error code: %d", rc);
     return rc;
