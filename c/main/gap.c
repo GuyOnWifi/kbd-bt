@@ -1,6 +1,7 @@
 #include "gap.h"
 #include "config.h"
 #include "esp_log.h"
+#include "hogp_gatt_svr.h"
 #include "host/ble_gap.h"
 #include "host/ble_hs.h"
 #include "host/ble_hs_adv.h"
@@ -61,7 +62,7 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
       // Try to update connection parameters
       struct ble_gap_upd_params params = {.itvl_min = desc.conn_itvl,
                                           .itvl_max = desc.conn_itvl,
-                                          .latency = 3,
+                                          .latency = 0,
                                           .supervision_timeout =
                                               desc.supervision_timeout};
       rc = ble_gap_update_params(event->connect.conn_handle, &params);
@@ -90,6 +91,48 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg) {
       ESP_LOGE(TAG, "Failed to find conection by handle, error: %d", rc);
       return rc;
     }
+    return rc;
+
+  /* Advertising complete event */
+  case BLE_GAP_EVENT_ADV_COMPLETE:
+    /* Advertising completed, restart advertising */
+    ESP_LOGI(TAG, "advertise complete; reason=%d", event->adv_complete.reason);
+    adv_start();
+    return rc;
+
+  /* Notification sent event */
+  case BLE_GAP_EVENT_NOTIFY_TX:
+    if ((event->notify_tx.status != 0) &&
+        (event->notify_tx.status != BLE_HS_EDONE)) {
+      /* Print notification info on error */
+      ESP_LOGI(TAG,
+               "notify event; conn_handle=%d attr_handle=%d "
+               "status=%d is_indication=%d",
+               event->notify_tx.conn_handle, event->notify_tx.attr_handle,
+               event->notify_tx.status, event->notify_tx.indication);
+    }
+    return rc;
+
+  /* Subscribe event */
+  case BLE_GAP_EVENT_SUBSCRIBE:
+    /* Print subscription info to log */
+    ESP_LOGI(TAG,
+             "subscribe event; conn_handle=%d attr_handle=%d "
+             "reason=%d prevn=%d curn=%d previ=%d curi=%d",
+             event->subscribe.conn_handle, event->subscribe.attr_handle,
+             event->subscribe.reason, event->subscribe.prev_notify,
+             event->subscribe.cur_notify, event->subscribe.prev_indicate,
+             event->subscribe.cur_indicate);
+
+    /* GATT subscribe event callback */
+    hogp_gatt_svr_subscribe_cb(event);
+    return rc;
+
+  case BLE_GAP_EVENT_MTU:
+    /* Print MTU update info to log */
+    ESP_LOGI(TAG, "mtu update event; conn_handle=%d cid=%d mtu=%d",
+             event->mtu.conn_handle, event->mtu.channel_id, event->mtu.value);
+    return rc;
   }
   return rc;
 }
@@ -116,7 +159,7 @@ int adv_start() {
   adv_fields.tx_pwr_lvl_is_present = 1;
 
   // Set device apperance
-  adv_fields.appearance = BLE_GAP_APPEARANCE_GENERIC_TAG;
+  adv_fields.appearance = BLE_GAP_APPEARANCE_KEYBOARD;
   adv_fields.appearance_is_present = 1;
 
   // Set device LE role
@@ -135,7 +178,7 @@ int adv_start() {
   rsp_fields.uri_len = sizeof(uri);
 
   // Intervals
-  rsp_fields.adv_itvl = BLE_GAP_ADV_ITVL_MS(500);
+  rsp_fields.adv_itvl = BLE_GAP_ADV_ITVL_MS(40);
   rsp_fields.adv_itvl_is_present = 1;
 
   rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
@@ -206,7 +249,7 @@ int gap_init() {
 
   // Sets the GAP apperaence
   // https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Assigned_Numbers/out/en/Assigned_Numbers.pdf
-  rc = ble_svc_gap_device_appearance_set(BLE_GAP_APPEARANCE_GENERIC_TAG);
+  rc = ble_svc_gap_device_appearance_set(BLE_GAP_APPEARANCE_KEYBOARD);
   if (rc != 0) {
     ESP_LOGE(TAG, "failed to set device appearance, error code: %d", rc);
     return rc;

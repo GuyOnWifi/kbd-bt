@@ -1,20 +1,17 @@
 #include "config.h"
 #include "esp_err.h"
 #include "esp_log.h"
-#include "esp_random.h"
 #include "freertos/idf_additions.h"
 #include "gap.h"
-#include "gatt_svr.h"
-#include "heart_rate.h"
+#include "hogp_gatt_svr.h"
 #include "host/ble_hs.h"
 #include "host/ble_store.h"
 #include "nimble/nimble_port.h"
 #include "nvs_flash.h"
 #include "portmacro.h"
-#include <stdint.h>
 #include <stdio.h>
 
-// Forward declaration touse internal API
+// Forward declaration to use internal API
 void ble_store_config_init(void);
 
 static void on_stack_reset(int reason) {
@@ -30,8 +27,13 @@ static void on_stack_sync() {
 static void nimble_host_config_init() {
   ble_hs_cfg.reset_cb = on_stack_reset;
   ble_hs_cfg.sync_cb = on_stack_sync;
-  ble_hs_cfg.gatts_register_cb = kbd_gatt_svr_register_cb;
+  ble_hs_cfg.gatts_register_cb = hogp_gatt_svr_register_cb;
   ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+
+  ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+  ble_hs_cfg.sm_bonding = 1; // Enable Bonding (Store the keys!)
+  ble_hs_cfg.sm_mitm = 1;    // Man-In-The-Middle protection
+  ble_hs_cfg.sm_sc = 1;      // Secure Connections (LE Secure)
 
   // Store host config
   ble_store_config_init();
@@ -48,12 +50,13 @@ static void nimble_host_task(void *param) {
 }
 
 // Dummy task for heart rate
-static void heart_rate_task(void *param) {
+static void keyboard_task(void *param) {
   ESP_LOGI(TAG, "heart rate task started!");
   while (1) {
-    update_heart_rate();
-    ESP_LOGI(TAG, "heart rate updated to %d", get_heart_rate());
-    send_heart_rate_indication();
+    ESP_LOGI(TAG, "SEND KEYBOARD");
+    send_keyboard_input_notify(0x04);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    send_keyboard_input_notify(0x00);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
   vTaskDelete(NULL);
@@ -75,6 +78,9 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
 
+  // Configure NimBLE
+  nimble_host_config_init();
+
   // Initialize the BLE stack (NimBLE)
   ret = nimble_port_init();
   if (ret != ESP_OK) {
@@ -88,16 +94,12 @@ void app_main(void) {
     ESP_LOGE(TAG, "Failed to initialize GAP, error code: %d", rc);
   }
 
-  rc = kbd_gatt_svr_init();
+  rc = hogp_gatt_svr_init();
   if (rc != 0) {
     ESP_LOGE(TAG, "Failed to initialize GATT, error code %d", rc);
   }
-
-  // Configure NimBLE
-  nimble_host_config_init();
-
   // Run it as a task
   xTaskCreate(nimble_host_task, "NimBLE Host", 4 * 1024, NULL, 5, NULL);
-  xTaskCreate(heart_rate_task, "Heart Rate", 4 * 1024, NULL, 5, NULL);
+  xTaskCreate(keyboard_task, "Heart Rate", 4 * 1024, NULL, 5, NULL);
   return;
 }
